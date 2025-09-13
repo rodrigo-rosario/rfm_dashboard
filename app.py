@@ -280,6 +280,24 @@ with c4:
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🏁 Resumo", "🧭 Perfis", "🔍 Explorar", "📈 Tendências", "🛒 Produtos", "⬇️ Exportar"])
 
 with tab1:
+
+    # 👉 Dicas de interpretação (no topo da aba Resumo)
+    with st.expander("🧠 Dicas de interpretação", expanded=False):
+        st.markdown("""
+- **VIP Atual**: alto gasto e frequência, compras recentes → retenção, upsell.
+- **VIP Dormindo**: alto gasto histórico, sem compras recentes → reativação.
+- **Leal**: bom nível em geral → plano de fidelidade, cross-sell.
+- **Dormindo/Churn**: pouco engajamento e muito tempo sem comprar → campanhas de resgate.
+- **Oportunidade**: nutrição e ofertas de entrada.
+""")
+
+    with st.expander("🧠 Dicas de interpretação (Resumo)"):
+        st.markdown("""
+- **Fatia maior ≠ melhor**: combine % de cada rótulo com **valor** dos grupos nas abas seguintes.
+- **Silhouette** no verde (≥ 0.35) sugere separação boa; amarelo (0.20–0.35) é aceitável; vermelho pede revisão.
+- Compare **k**: prefira equilíbrio de tamanhos + coerência de perfis em vez de perseguir apenas Silhouette.
+""")
+
     st.markdown("#### Distribuição por rótulo")
     lab_counts = rfm_used['label'].value_counts().reset_index()
     lab_counts.columns = ['label','n']
@@ -320,6 +338,15 @@ with tab1:
 """)
 
 with tab2:
+
+    with st.expander("🧠 Dicas de interpretação (Perfis)"):
+        st.markdown("""
+- **Recency (↓)**: quanto menor, mais recente — olhe clusters com R baixo para ações imediatas.
+- **Frequency / Monetary (↑)**: use juntos para diferenciar **Leal** vs **VIP**.
+- **Barras por cluster**: procure assimetria (ex.: R alto + F baixo → risco/churn).
+- Use estes perfis para desenhar **campanhas** específicas por rótulo.
+""")
+
     st.markdown("#### Perfis médios por cluster")
     prof = rfm_used.groupby(["cluster","label"])[["recency","frequency","monetary"]].mean().reset_index()
     prof["n_customers"] = rfm_used.groupby("cluster").size().values
@@ -334,6 +361,14 @@ with tab2:
     st.plotly_chart(figb, use_container_width=True)
 
 with tab3:
+
+    with st.expander("🧠 Dicas de interpretação (Explorar)"):
+        st.markdown("""
+- **Dispersões**: densidade de pontos indica concentração do perfil.
+- Filtre por **Monetary mínimo** para mapear clientes-chave nos rótulos.
+- Use o **hover** (customer_id) para amostrar casos e validar se o grupo faz sentido.
+""")
+
     st.markdown("#### Explorar clientes")
     colf1, colf2 = st.columns(2)
     with colf1:
@@ -357,6 +392,14 @@ with tab3:
     st.dataframe(sub.sort_values("monetary", ascending=False).head(1000), use_container_width=True)
 
 with tab4:
+
+    with st.expander("🧠 Dicas de interpretação (Tendências)"):
+        st.markdown("""
+- **Área empilhada**: observe sazonalidade e a **troca de mix** entre rótulos ao longo do tempo.
+- Quedas em **VIP Atual** ou **Leal** pedem plano de retenção; alta em **Dormindo/Churn** sinaliza reativação.
+- Combine com o **filtro de período** para zoom em campanhas/eventos.
+""")
+
     st.markdown("#### Tendências (mês a mês)")
     if product_col and product_col in data_copy.columns:
         tx = data_copy.copy()
@@ -385,6 +428,14 @@ with tab4:
     st.plotly_chart(figt, use_container_width=True)
 
 with tab5:
+
+    with st.expander("🧠 Dicas de interpretação (Produtos)"):
+        st.markdown("""
+- **Top por Receita**: priorize ofertas e disponibilidade destes itens.
+- **Top por Quantidade**: bons para **bundles** e tíquete de entrada.
+- Cruze com rótulos (aba Explorar/Tendências) para **cross-sell** direcionado.
+""")
+
     st.markdown("#### Produtos (opcional)")
     if product_col and product_col in data_copy.columns:
         if revenue_col and revenue_col in data_copy.columns:
@@ -403,6 +454,14 @@ with tab5:
         st.info("Para habilitar esta aba, informe uma coluna de **Product ID** no mapeamento.")
 
 with tab6:
+
+    with st.expander("🧠 Dicas de interpretação (Exportar)"):
+        st.markdown("""
+- Use o **CSV** para ativar campanhas por rótulo (e medir uplift).
+- O **Resumo Executivo** é o roteiro: contexto → k escolhido → insights → próximas ações.
+- Registre a métrica de qualidade (Silhouette) para comparação futura.
+""")
+
     st.markdown("#### Exportar")
     out = rfm_used.copy()
     csv = out.to_csv(index=False).encode("utf-8")
