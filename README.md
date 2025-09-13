@@ -1,5 +1,5 @@
 
-# Dashboard de Segmentação — RFM + K-Means (Premium Full)
+# Dashboard de Segmentação — RFM + K-Means
 
 Painel Streamlit **apresentável** e **didático** para segmentação via **RFM** + **K-Means**, agora com **todos os itens do roadmap implementados**:
 - Pesos de **R/F/M** configuráveis por UI
