@@ -1,0 +1,31 @@
+﻿# Python básico
+__pycache__/
+*.py[cod]
+*.pyo
+*.ipynb_checkpoints/
+*.egg-info/
+.DS_Store
+
+# Ambientes virtuais
+.venv/
+venv/
+ENV/
+env/
+*.pyenv/
+
+# Venv criada dentro de rfm_dashboard (seu caso)
+rfm_dashboard/Lib/
+rfm_dashboard/Scripts/
+rfm_dashboard/etc/
+rfm_dashboard/share/
+rfm_dashboard/pyvenv.cfg
+
+# Dados/artefatos (ajuste ao projeto)
+# Se quiser manter sample_data/ versionado, remova *.csv OU faça exceção abaixo
+*.log
+*.parquet
+*.xlsx
+*.pkl
+# *.csv
+# Exceção (descomente se quiser manter somente os CSVs de sample_data):
+# !sample_data/*.csv
