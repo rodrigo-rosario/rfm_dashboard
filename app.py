@@ -1,57 +1,48 @@
-import io, math, textwrap, calendar, json
+import json
+from datetime import datetime
 import numpy as np
 import pandas as pd
-import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
-from datetime import datetime
-from sklearn.preprocessing import StandardScaler
+import streamlit as st
+from scipy.spatial.distance import pdist, squareform
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score, adjusted_rand_score
-from scipy.spatial.distance import cdist, pdist, squareform
+from sklearn.metrics import (adjusted_rand_score, calinski_harabasz_score,
+                             davies_bouldin_score, silhouette_score)
+from sklearn.preprocessing import StandardScaler
 
-st.set_page_config(page_title="RFM + K-Means — Painel Premium (Full)", layout="wide")
+st.set_page_config(page_title="RFM + K-Means — Painel", layout="wide")
 
-# ================== THEME / CSS ==================
-def inject_theme(accent="#4c78a8", dark=False):
-    base_bg = "#0b1220" if dark else "#ffffff"
-    card_bg = "rgba(16,22,35,0.65)" if dark else "rgba(247,249,252,0.95)"
-    text1   = "#e6eefc" if dark else "#334"
-    text2   = "#c7d1e8" if dark else "#667"
-    header_grad = f"linear-gradient(90deg, {accent} 0%, rgba(76,120,168,0.45) 60%, rgba(255,255,255,0) 100%)" if not dark else f"linear-gradient(90deg, {accent} 0%, rgba(76,120,168,0.25) 55%, rgba(11,18,32,0) 100%)"
+# ================== THEME / CSS (SEM DARK) ==================
+def inject_theme(accent="#4c78a8"):
     st.markdown(f"""
     <style>
     :root {{ --accent: {accent}; }}
     .kpi-box {{
-      background: linear-gradient(180deg, {card_bg} 0%, {card_bg} 100%);
-      border: 1px solid rgba(255,255,255,{0.08 if dark else 0.06});
+      background: linear-gradient(180deg, rgba(247,249,252,0.95) 0%, rgba(247,249,252,0.95) 100%);
+      border: 1px solid rgba(0,0,0,0.06);
       border-radius: 16px;
       padding: 14px 16px;
-      box-shadow: 0 6px 16px rgba(0,0,0,{0.35 if dark else 0.06});
+      box-shadow: 0 6px 16px rgba(0,0,0,.06);
     }}
-    .kpi-title {{ font-weight: 700; color:{text1}; font-size: .95rem; }}
-    .kpi-value {{ font-weight: 900; font-size: 1.6rem; margin-top:2px; color:{text1}; }}
-    .kpi-sub   {{ color:{text2}; font-size:.8rem; }}
+    .kpi-title {{ font-weight: 700; color:#334; font-size:.95rem; }}
+    .kpi-value {{ font-weight: 900; font-size:1.6rem; margin-top:2px; color:#334; }}
+    .kpi-sub   {{ color:#667; font-size:.8rem; }}
     .badge {{
       display:inline-block; padding:3px 8px; border-radius:999px;
       background: var(--accent); color:#fff; font-weight:700; font-size:.75rem;
     }}
     .headerbar {{
-      padding: 10px 16px; border-radius: 14px; margin-bottom: 8px;
-      background: {header_grad};
+      padding:10px 16px; border-radius:14px; margin-bottom:8px;
+      background: linear-gradient(90deg, var(--accent) 0%, rgba(76,120,168,0.45) 60%, rgba(255,255,255,0) 100%);
       color:#fff;
     }}
-    .headerbar h1 {{ color:#fff !important; }}
-    .card {{ border:1px solid rgba(255,255,255,{0.08 if dark else 0.06}); border-radius:14px; padding:12px 14px; background:{card_bg}; }}
-    .element-container, .stMarkdown, .stText {{
-      color: {text1};
-    }}
-    .stApp {{ background-color: {base_bg}; }}
+    .headerbar h1 {{ color:#fff !important; font-size:1.4rem; line-height:1.2; margin:0; }}
+    .card {{ border:1px solid rgba(0,0,0,.06); border-radius:14px; padding:12px 14px; background:rgba(247,249,252,0.95); }}
     </style>
     """, unsafe_allow_html=True)
 
-# Color palettes
 PALETTES = {
     "Azul (default)": px.colors.qualitative.Set2,
     "Vibrante": px.colors.qualitative.Vivid,
@@ -80,7 +71,7 @@ def clip_p99(df_in, cols):
 def compute_rfm(transactions, customer_col, date_col, invoice_col=None, revenue_col=None):
     tx = transactions.copy()
     tx[date_col] = try_parse_dates(tx[date_col])
-    tx = tx[~tx[date_col].isna()]  # drop NaT
+    tx = tx[~tx[date_col].isna()]
 
     # revenue derivation if needed
     if revenue_col is None or revenue_col not in tx.columns:
@@ -134,7 +125,7 @@ def transform_scale(rfm_df, use_log1p=True, na_strategy="drop", weights=(1,1,1))
     if use_log1p:
         X = np.log1p(X)
 
-    # weights: menor recency é melhor, então invertemos sinal
+    # weights (recency invertida)
     wr, wf, wm = weights
     Xw = pd.DataFrame({
         "recency": -wr * X["recency"],
@@ -154,28 +145,24 @@ def evaluate_kmeans(X, k, random_state=42, n_init="auto"):
     ch  = calinski_harabasz_score(X, labels) if k > 1 else np.nan
     return km, labels, sil, dbi, ch
 
-# ---- Additional metrics ----
 def dunn_index(X, labels, sample_cap=2000):
-    """Dunn = min_intercluster_dist / max_intracluster_diameter"""
     X = np.asarray(X)
     if X.shape[0] > sample_cap:
-        idx = np.random.RandomState(0).choice(X.shape[0], sample_cap, replace=False)
-        X = X[idx]
-        labels = np.asarray(labels)[idx]
-    # pairwise distances
+        rng = np.random.RandomState(0)
+        idx = rng.choice(X.shape[0], sample_cap, replace=False)
+        X = X[idx]; labels = np.asarray(labels)[idx]
     D = squareform(pdist(X))
-    unique_labels = np.unique(labels)
-    # max intra diameter
+    uniq = np.unique(labels)
+    # max intra
     diam = 0.0
-    for c in unique_labels:
+    for c in uniq:
         idx = np.where(labels == c)[0]
-        if len(idx) <= 1: 
-            continue
-        diam = max(diam, np.max(D[np.ix_(idx, idx)]))
-    # min intercluster distance
+        if len(idx) > 1:
+            diam = max(diam, np.max(D[np.ix_(idx, idx)]))
+    # min inter
     delta = np.inf
-    for i, ci in enumerate(unique_labels):
-        for cj in unique_labels[i+1:]:
+    for i, ci in enumerate(uniq):
+        for cj in uniq[i+1:]:
             idx_i = np.where(labels == ci)[0]
             idx_j = np.where(labels == cj)[0]
             dist = np.min(D[np.ix_(idx_i, idx_j)])
@@ -185,37 +172,28 @@ def dunn_index(X, labels, sample_cap=2000):
     return float(delta / diam)
 
 def xie_beni_index(X, labels, centers):
-    """XB = sum ||x - v_label||^2 / (n * min_{k!=l} ||v_k - v_l||^2)"""
-    X = np.asarray(X)
-    centers = np.asarray(centers)
-    # numerator
+    X = np.asarray(X); centers = np.asarray(centers)
     sq_dists = np.sum((X - centers[labels])**2, axis=1).sum()
-    # denominator
-    center_dists = squareform(pdist(centers))
-    np.fill_diagonal(center_dists, np.inf)
-    min_center_dist2 = np.min(center_dists**2)
+    cd = squareform(pdist(centers)); np.fill_diagonal(cd, np.inf)
+    min_center_dist2 = np.min(cd**2)
     if min_center_dist2 == 0 or not np.isfinite(min_center_dist2):
         return np.nan
-    n = X.shape[0]
-    return float(sq_dists / (n * min_center_dist2))
+    return float(sq_dists / (X.shape[0] * min_center_dist2))
 
 def stability_bootstrap_ARIs(X, base_labels, k, n_boot=10, sample_frac=0.8, random_state=42):
     rng = np.random.RandomState(random_state)
     aris = []
-    for b in range(n_boot):
+    for _ in range(n_boot):
         idx = rng.choice(np.arange(X.shape[0]), size=max(2, int(sample_frac*X.shape[0])), replace=True)
-        km_b = KMeans(n_clusters=k, random_state=rng.randint(0, 100000), n_init="auto").fit(X[idx])
+        km_b = KMeans(n_clusters=k, random_state=rng.randint(0, 1_000_000), n_init="auto").fit(X[idx])
         pred_full = km_b.predict(X)
-        ari = adjusted_rand_score(base_labels, pred_full)
-        aris.append(ari)
+        aris.append(adjusted_rand_score(base_labels, pred_full))
     return float(np.mean(aris)), float(np.std(aris)), aris
 
 def auto_labels(rfm_with_clusters):
-    q = {}
-    for c in ["recency","frequency","monetary"]:
-        q[c] = rfm_with_clusters[c].quantile([0.25,0.5,0.75]).to_dict()
+    q = {c: rfm_with_clusters[c].quantile([0.25,0.5,0.75]).to_dict()
+         for c in ["recency","frequency","monetary"]}
     prof = rfm_with_clusters.groupby("cluster")[["recency","frequency","monetary"]].mean()
-
     labels = {}
     for cl, row in prof.iterrows():
         r, f, m = row["recency"], row["frequency"], row["monetary"]
@@ -241,25 +219,22 @@ def kpi_box(title, value, sub=None):
     """, unsafe_allow_html=True)
 
 def fig_download_button(fig, filename, label):
-    """Download PNG if kaleido is available; otherwise fall back to HTML."""
+    """Download PNG if kaleido exists; otherwise HTML fallback."""
     try:
-        import kaleido  # noqa: F401
+        import kaleido  # noqa
         buf = fig.to_image(format="png", scale=2)
         st.download_button(label, data=buf, file_name=filename, mime="image/png")
-    except Exception as e:
+    except Exception:
         html = pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
         st.download_button(label + " (HTML)", data=html.encode("utf-8"),
-                           file_name=filename.replace(".png", ".html"), mime="text/html")
-        st.caption("Para PNG, instale o pacote 'kaleido' (pip install -r requirements.txt).")
-
+                           file_name=filename.replace(".png",".html"), mime="text/html")
+        st.caption("Para PNG, instale 'kaleido' no mesmo ambiente do Streamlit.")
 
 # ================== SIDEBAR ==================
 st.sidebar.header("⚙️ Configurações")
-
-accent_choice = st.sidebar.color_picker("Cor de destaque", "#4c78a8", help="Aplique a cor da sua marca.")
-dark_mode = st.sidebar.toggle("🌙 Tema dark", value=False)
-inject_theme(accent_choice, dark=dark_mode)
-pio.templates.default = "plotly_dark" if dark_mode else "plotly_white"
+accent_choice = st.sidebar.color_picker("Cor de destaque", "#4c78a8")
+inject_theme(accent_choice)
+pio.templates.default = "plotly_white"
 
 palette_name = st.sidebar.selectbox("Paleta de cores", list(PALETTES.keys()), index=0)
 PALETTE = PALETTES[palette_name]
@@ -268,33 +243,29 @@ uploaded = st.sidebar.file_uploader("Base transacional (CSV/Excel)", type=["csv"
 if uploaded is not None:
     data = pd.read_csv(uploaded) if uploaded.name.endswith(".csv") else pd.read_excel(uploaded)
 else:
-    st.info("Use o dataset de exemplo em `sample_data/sample_transactions.csv`.")
+    st.info("Carregue sua base (ou use sample_data/sample_transactions.csv).")
     try:
         data = pd.read_csv("sample_data/sample_transactions.csv")
     except Exception:
         data = None
-
 if data is None or data.empty:
     st.stop()
 
 st.sidebar.subheader("Mapeamento")
 cols = list(data.columns)
-
 def guess(colnames, candidates):
     for c in colnames:
         cl = c.lower()
         for cand in candidates:
-            if cand in cl:
-                return c
+            if cand in cl: return c
     return None
-
 customer_col = st.sidebar.selectbox("Customer ID", cols, index=(cols.index(guess(cols, ["customer","cliente","cust"])) if guess(cols, ["customer","cliente","cust"]) in cols else 0))
 date_col     = st.sidebar.selectbox("Data da Compra", cols, index=(cols.index(guess(cols, ["date","data"])) if guess(cols, ["date","data"]) in cols else 0))
 invoice_col  = st.sidebar.selectbox("Invoice (opcional)", [None]+cols, index=([None]+cols).index(guess(cols, ["invoice","fatura","nota","pedido","order_id"])) if guess(cols, ["invoice","fatura","nota","pedido","order_id"]) in cols else 0)
 revenue_col  = st.sidebar.selectbox("Revenue (opcional)", [None]+cols, index=([None]+cols).index(guess(cols, ["revenue","amount","valor","total"])) if guess(cols, ["revenue","amount","valor","total"]) in cols else 0)
 product_col  = st.sidebar.selectbox("Product ID (opcional)", [None]+cols, index=([None]+cols).index(guess(cols, ["product","sku","item"])) if guess(cols, ["product","sku","item"]) in cols else 0)
 
-# Global filters
+# Filtros globais estilo slicer
 data_copy = data.copy()
 data_copy[date_col] = try_parse_dates(data_copy[date_col])
 dmin, dmax = data_copy[date_col].min().date(), data_copy[date_col].max().date()
@@ -304,7 +275,6 @@ data_copy = data_copy.loc[mask_date].copy()
 
 use_log1p   = st.sidebar.checkbox("Aplicar log1p (R,F,M)", True)
 na_strategy = st.sidebar.selectbox("Faltantes", ["drop","median"], index=0)
-
 st.sidebar.markdown("**Pesos R / F / M**")
 wr = st.sidebar.slider("Peso Recency (↓)", 0.0, 3.0, 1.0, 0.1)
 wf = st.sidebar.slider("Peso Frequency (↑)", 0.0, 3.0, 1.0, 0.1)
@@ -325,28 +295,27 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ================== RFM ==================
+# ================== MODELAGEM ==================
 rfm, anchor = compute_rfm(data_copy, customer_col, date_col, invoice_col, revenue_col)
 X_scaled, scaler, mask_keep = transform_scale(rfm, use_log1p=use_log1p, na_strategy=na_strategy, weights=weights)
 rfm_used = rfm.loc[mask_keep].copy()
 
-# Fit e rotular
 km, labels, sil, dbi, ch = evaluate_kmeans(X_scaled, k, random_state=random_state)
 rfm_used["cluster"] = labels
 label_map = auto_labels(rfm_used)
 rfm_used["label"] = rfm_used["cluster"].map(label_map)
 
-# Additional metrics
+# Extra metrics
 dunn = dunn_index(X_scaled, labels)
 xb   = xie_beni_index(X_scaled, labels, km.cluster_centers_)
-ari_mean, ari_std, ari_list = stability_bootstrap_ARIs(X_scaled, labels, k, n_boot=10, sample_frac=0.8, random_state=random_state)
+ari_mean, ari_std, _ = stability_bootstrap_ARIs(X_scaled, labels, k, n_boot=6, sample_frac=0.8, random_state=random_state)
 
-# KPIs (gauge + cards)
+# KPIs
 c1, c2, c3, c4 = st.columns([1.3,1,1,1])
 with c1:
     fig_g = go.Figure(go.Indicator(
         mode="gauge+number",
-        value=0 if sil is None or (isinstance(sil,float) and (np.isnan(sil) or np.isinf(sil))) else float(sil),
+        value=0 if (not isinstance(sil, (int,float)) or np.isnan(sil) or np.isinf(sil)) else float(sil),
         title={"text":"Silhouette (↑ melhor)"},
         gauge={"axis":{"range":[0,1]}, "bar":{"color":accent_choice},
                "steps":[{"range":[0,0.2],"color":"#f8d7da"},
@@ -355,7 +324,6 @@ with c1:
     ))
     fig_g.update_layout(height=180, margin=dict(l=10,r=10,t=30,b=0), template=pio.templates.default)
     st.plotly_chart(fig_g, use_container_width=True)
-    # Export gauge
     fig_download_button(fig_g, "kpi_silhouette.png", "📸 Baixar KPI (PNG)")
 with c2: kpi_box("Clientes usados", f"{len(rfm_used):,}", f"Âncora: {anchor.date()}")
 with c3: kpi_box("Clusters (k)", f"{k}", f"RandomState={random_state}")
@@ -363,11 +331,13 @@ with c4:
     top_cluster = rfm_used['cluster'].value_counts(normalize=True).sort_values(ascending=False).iloc[0]
     kpi_box("Maior cluster", f"{top_cluster*100:.1f}%", "participação")
 
-# Tabs
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["🏁 Resumo", "🧭 Perfis", "🔍 Explorar", "📈 Tendências", "🛒 Produtos", "⬇️ Exportar", "🧩 Roadmap", "⚙️ Monitoramento"])
+# ================== TABS ==================
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "🏁 Resumo", "🧭 Perfis", "🔍 Explorar", "📈 Tendências",
+    "🛒 Produtos", "⬇️ Exportar", "🧩 Roadmap", "⚙️ Monitoramento"
+])
 
 with tab1:
-    # Top tips
     with st.expander("🧠 Dicas de interpretação", expanded=False):
         st.markdown("""
 - **VIP Atual**: alto gasto e frequência, compras recentes → retenção, upsell.
@@ -376,7 +346,6 @@ with tab1:
 - **Dormindo/Churn**: pouco engajamento e muito tempo sem comprar → campanhas de resgate.
 - **Oportunidade**: nutrição e ofertas de entrada.
 """)
-
     st.markdown("#### Distribuição por rótulo")
     lab_counts = rfm_used['label'].value_counts().reset_index()
     lab_counts.columns = ['label','n']
@@ -387,15 +356,20 @@ with tab1:
     fig_download_button(figp, "resumo_distribuicao_rotulo.png", "📸 Baixar gráfico (PNG)")
 
     cA, cB, cC = st.columns(3)
-    with cA: kpi_box("Dunn (↑ melhor)", f"{0 if dunn is None or (isinstance(dunn,float) and (np.isnan(dunn) or np.isinf(dunn))) else dunn:.3f}")
-    with cB: kpi_box("Xie-Beni (↓ melhor)", f"{0 if xb is None or (isinstance(xb,float) and (np.isnan(xb) or np.isinf(xb))) else xb:.3f}")
-    with cC: kpi_box("Estabilidade ARI", f"{ari_mean:.3f} ± {ari_std:.3f}", "bootstraps=10")
+    with cA: kpi_box("Dunn (↑)", f"{0 if not isinstance(dunn,(int,float)) or np.isnan(dunn) else dunn:.3f}")
+    with cB: kpi_box("Xie-Beni (↓)", f"{0 if not isinstance(xb,(int,float)) or np.isnan(xb) else xb:.3f}")
+    with cC: kpi_box("Estabilidade ARI", f"{ari_mean:.3f} ± {ari_std:.3f}", "bootstraps=6")
 
     if compare_k:
         km2, labels2, sil2, dbi2, ch2 = evaluate_kmeans(X_scaled, k2, random_state=random_state)
+
+        # Frame LIMPO com uma única coluna 'cluster' para rotular k2
+        tmp_k2 = rfm_used[["recency","frequency","monetary"]].copy()
+        tmp_k2["cluster"] = labels2
+        label_map2 = auto_labels(tmp_k2)
+
         rfm_cmp = rfm_used.copy()
         rfm_cmp["cluster_k2"] = labels2
-        label_map2 = auto_labels(rfm_cmp.rename(columns={"cluster_k2":"cluster"}).assign(cluster=rfm_cmp["cluster_k2"]))
         rfm_cmp["label_k2"] = rfm_cmp["cluster_k2"].map(label_map2)
 
         cX, cY = st.columns(2)
@@ -419,14 +393,6 @@ with tab1:
             fig_download_button(fig2, "comparacao_k2.png", "📸 Baixar k2 (PNG)")
 
 with tab2:
-
-    with st.expander("🧠 Dicas de interpretação (Perfis)"):
-        st.markdown("""
-- **Recency (↓)**: quanto menor, mais recente → prioridade alta.
-- **Frequency / Monetary (↑)**: diferenciam **Leal** de **VIP**.
-- **Barras por cluster**: procure assimetrias (R alto + F baixo = risco).
-- Use estes perfis para planejar **retenção**, **reativação** e **cross-sell**.
-""")
     st.markdown("#### Perfis médios por cluster")
     prof = rfm_used.groupby(["cluster","label"])[["recency","frequency","monetary"]].mean().reset_index()
     prof["n_customers"] = rfm_used.groupby("cluster").size().values
@@ -441,13 +407,6 @@ with tab2:
     fig_download_button(figb, "perfis_barras.png", "📸 Baixar gráfico (PNG)")
 
 with tab3:
-
-    with st.expander("🧠 Dicas de interpretação (Explorar)"):
-        st.markdown("""
-- **Dispersões** mostram concentração/caudas dos grupos.
-- Filtre por **rótulo** e **Monetary mínimo** para focar clientes chave.
-- Use o **hover** (customer_id) para auditar casos representativos.
-""")
     st.markdown("#### Explorar clientes")
     colf1, colf2 = st.columns(2)
     with colf1:
@@ -473,13 +432,6 @@ with tab3:
     st.dataframe(sub.sort_values("monetary", ascending=False).head(1000), use_container_width=True)
 
 with tab4:
-
-    with st.expander("🧠 Dicas de interpretação (Tendências)"):
-        st.markdown("""
-- **Área empilhada** revela sazonalidade e mudança de **mix** de rótulos.
-- Queda de **VIP Atual** sinaliza ação de **retenção**; alta de **Dormindo/Churn**, **reativação**.
-- Ajuste o **período** na sidebar para zoom em campanhas/eventos.
-""")
     st.markdown("#### Tendências (mês a mês)")
     tx = data_copy.copy()
     tx[date_col] = try_parse_dates(tx[date_col])
@@ -493,30 +445,21 @@ with tab4:
             tx["__rev__"] = pd.to_numeric(tx[qcol], errors="coerce").fillna(0).astype(float) * pd.to_numeric(tx[pcol], errors="coerce").fillna(0).astype(float)
         else:
             tx["__rev__"] = 1.0
-
     tx = tx.merge(rfm_used[["customer_id","label"]], how="left", left_on=customer_col, right_on="customer_id")
     tx["month"] = tx[date_col].dt.to_period("M").dt.to_timestamp()
     rev_month = tx.groupby(["month","label"])["__rev__"].sum().reset_index()
-
     figt = px.area(rev_month, x="month", y="__rev__", color="label", color_discrete_sequence=PALETTE,
                    title="Receita por mês (empilhado por rótulo)", template=pio.templates.default)
     st.plotly_chart(figt, use_container_width=True)
     fig_download_button(figt, "tendencias_receita.png", "📸 Baixar gráfico (PNG)")
 
 with tab5:
-
-    with st.expander("🧠 Dicas de interpretação (Produtos)"):
-        st.markdown("""
-- **Top por Receita** → foco em margem/tíquete e disponibilidade.
-- **Top por Quantidade** → bundles, ofertas de entrada, cross-sell.
-- Cruze com rótulos (Explorar/Tendências) para campanhas direcionadas.
-""")
     st.markdown("#### Produtos (opcional)")
     if product_col and product_col in data_copy.columns:
         if revenue_col and revenue_col in data_copy.columns:
             prod_rev = data_copy.groupby(product_col)[revenue_col].sum().sort_values(ascending=False).head(20).reset_index()
             figp2 = px.bar(prod_rev, x=product_col, y=revenue_col, color=product_col, color_discrete_sequence=PALETTE,
-                          title="Top 20 produtos por receita", template=pio.templates.default)
+                           title="Top 20 produtos por receita", template=pio.templates.default)
             st.plotly_chart(figp2, use_container_width=True)
             fig_download_button(figp2, "produtos_top_receita.png", "📸 Baixar gráfico (PNG)")
         qcols = [c for c in data_copy.columns if c.lower()=="quantity"]
@@ -531,16 +474,8 @@ with tab5:
         st.info("Para habilitar esta aba, informe uma coluna de **Product ID** no mapeamento.")
 
 with tab6:
-
-    with st.expander("🧠 Dicas de interpretação (Exportar)"):
-        st.markdown("""
-- **CSV padrão BI** alimenta Power BI/Looker com `label` + janelas de período.
-- **Perfis de Cluster** ajudam a criar personas/roteiros de venda.
-- **Resumo Executivo** é o texto base para apresentação e registro.
-""")
     st.markdown("#### Exportar / Integrar")
     out = rfm_used.copy()
-    # Standard schema for BI
     out_std = out.assign(
         anchor_date=str(anchor.date()),
         period_start=str(date_range[0]),
@@ -549,20 +484,16 @@ with tab6:
     csv_std = out_std.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ CSV (padrão BI)", data=csv_std, file_name="clientes_segmentados_standard.csv", mime="text/csv")
 
-    # Cluster profiles export
     profiles = out.groupby(["cluster","label"])[["recency","frequency","monetary"]].mean().reset_index()
     csv_prof = profiles.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ CSV Perfis de Cluster", data=csv_prof, file_name="clusters_profiles.csv", mime="text/csv")
 
-    # Optionally export transactions labeled (if join possible)
     if customer_col in data_copy.columns:
-        tx_labeled = data_copy.copy()
-        tx_labeled = tx_labeled.merge(out[["customer_id","cluster","label"]], how="left", left_on=customer_col, right_on="customer_id")
+        tx_labeled = data_copy.copy().merge(out[["customer_id","cluster","label"]], how="left", left_on=customer_col, right_on="customer_id")
         csv_tx = tx_labeled.to_csv(index=False).encode("utf-8")
         st.download_button("⬇️ CSV Transações rotuladas", data=csv_tx, file_name="transactions_labeled.csv", mime="text/csv")
 
-    # Resumo executivo
-    sil_txt = f"{0 if sil is None or (isinstance(sil,float) and (np.isnan(sil) or np.isinf(sil))) else float(sil):.3f}"
+    sil_txt = f"{0 if (not isinstance(sil,(int,float)) or np.isnan(sil) or np.isinf(sil)) else float(sil):.3f}"
     rotulos = ", ".join(sorted(out['label'].unique()))
     maior_grupo = out['label'].value_counts().idxmax()
     resumo = f"""# Resumo Executivo — Segmentação RFM
@@ -577,91 +508,59 @@ with tab6:
                        file_name="resumo_executivo.md", mime="text/markdown")
 
 with tab7:
-
-    with st.expander("🧠 Dicas de interpretação (Roadmap)"):
-        st.markdown("""
-- Itens marcados como ✅ já estão prontos.
-- Os demais podem ser priorizados conforme a disciplina/cliente.
-- Registre aprendizados ao usar **k** diferentes: qualidade (Silhouette/Dunn/XB) x aplicabilidade.
-""")
-    st.markdown("### Roadmap de Melhorias")
+    st.markdown("### Roadmap (status)")
     st.markdown("""
-- **Pesos configuráveis por UI** (sliders para R/F/M) — **implementado** ✅  
-- **Comparação lado a lado** entre dois valores de **k** — **implementado** ✅  
-- **Métricas adicionais** (**Dunn**, **Xie–Beni**) e **estabilidade** por **ARI** — **implementado** ✅  
-- **Exportação de imagens (PNG)** e **tema dark** — **implementado** ✅  
-- **Integração Power BI / Looker** via CSV padronizado — **implementado** ✅  
-- **Monitoramento de drift** (PSI mensal) e **relatório** — **implementado** ✅  
+- **Pesos configuráveis por UI** — ✅ implementado  
+- **Comparação de k (k x k2)** — ✅ implementado  
+- **Métricas (Dunn, Xie–Beni) e estabilidade (ARI)** — ✅ implementado  
+- **Export PNG** (fallback HTML) — ✅ implementado  
+- **Integração Power BI / Looker** — ✅ implementado  
+- **Monitoramento (PSI)** — ✅ implementado  
 """)
 
 with tab8:
-
-    with st.expander("🧠 Dicas de interpretação (Monitoramento)"):
-        st.markdown("""
-- **PSI**: `0–0.1` estável · `0.1–0.25` alerta · `>0.25` drástico.
-- Se PSI subir, re-treine clusters e compare métricas (**Silhouette/Dunn/XB/ARI**).
-- Baixe o **JSON** para histórico e anexar ao relatório do trabalho.
-""")
     st.markdown("### Monitoramento (Drift & Saúde dos clusters)")
-    st.markdown("Mede **PSI** (Population Stability Index) entre períodos para R, F e M.")
-
-    # Build RFM time series by month
-    rfm_ts = rfm_used.copy()
-    # Simples: usar percentis como bins fixos a partir do período atual
+    st.markdown("Mede **PSI** (Population Stability Index) entre metades do período para R, F e M.")
     def psi(ref, cur, bins=10, eps=1e-6):
-        # quantile bins on ref
         qs = np.linspace(0,1,bins+1)
         edges = np.unique(np.quantile(ref, qs))
-        # ensure at least 2 edges
-        if edges.size < 2:
-            return np.nan
+        if edges.size < 2: return np.nan
         ref_hist, _ = np.histogram(ref, bins=edges)
         cur_hist, _ = np.histogram(cur, bins=edges)
         ref_p = ref_hist / max(ref_hist.sum(), eps)
         cur_p = cur_hist / max(cur_hist.sum(), eps)
-        # avoid zeros
-        ref_p = np.clip(ref_p, eps, None)
-        cur_p = np.clip(cur_p, eps, None)
+        ref_p = np.clip(ref_p, eps, None); cur_p = np.clip(cur_p, eps, None)
         return float(np.sum((cur_p - ref_p) * np.log(cur_p / ref_p)))
-
-    # Create two windows: "janela A" (primeira metade do filtro) vs "janela B" (segunda metade)
     midpoint = pd.to_datetime(str(date_range[0])) + (pd.to_datetime(str(date_range[1])) - pd.to_datetime(str(date_range[0]))) / 2
     winA_mask = try_parse_dates(data_copy[date_col]) <= midpoint
     winB_mask = try_parse_dates(data_copy[date_col]) >  midpoint
-
-    # Aggregate RFM per customer for each window (recompute RFM quickly)
     def rfm_from_subset(df):
         rfm_s, _ = compute_rfm(df, customer_col, date_col, invoice_col, revenue_col)
         return rfm_s[["recency","frequency","monetary"]]
-
     rfm_A = rfm_from_subset(data_copy.loc[winA_mask]) if winA_mask.any() else rfm_used[["recency","frequency","monetary"]]
     rfm_B = rfm_from_subset(data_copy.loc[winB_mask]) if winB_mask.any() else rfm_used[["recency","frequency","monetary"]]
-
     psi_R = psi(rfm_A["recency"].values,   rfm_B["recency"].values)
     psi_F = psi(rfm_A["frequency"].values, rfm_B["frequency"].values)
     psi_M = psi(rfm_A["monetary"].values,  rfm_B["monetary"].values)
-
     cR, cF, cM = st.columns(3)
     with cR: kpi_box("PSI Recency", f"{psi_R:.3f}", "0–0.1 estável · 0.1–0.25 alerta · >0.25 drástico")
     with cF: kpi_box("PSI Frequency", f"{psi_F:.3f}", "0–0.1 estável · 0.1–0.25 alerta · >0.25 drástico")
     with cM: kpi_box("PSI Monetary", f"{psi_M:.3f}", "0–0.1 estável · 0.1–0.25 alerta · >0.25 drástico")
-
-    # Report export
     report = {
         "period_start": str(date_range[0]),
         "period_end": str(date_range[1]),
         "anchor_date": str(anchor.date()),
         "k": int(k),
         "metrics": {
-            "silhouette": float(sil),
-            "dunn": None if (dunn is None or (isinstance(dunn,float) and (np.isnan(dunn) or np.isinf(dunn)))) else float(dunn),
-            "xie_beni": None if (xb is None or (isinstance(xb,float) and (np.isnan(xb) or np.isinf(xb)))) else float(xb),
+            "silhouette": None if (not isinstance(sil,(int,float)) or np.isnan(sil) or np.isinf(sil)) else float(sil),
+            "dunn": None if (not isinstance(dunn,(int,float)) or np.isnan(dunn) or np.isinf(dunn)) else float(dunn),
+            "xie_beni": None if (not isinstance(xb,(int,float)) or np.isnan(xb) or np.isinf(xb)) else float(xb),
             "ari_mean": float(ari_mean),
             "ari_std": float(ari_std),
             "psi": {"recency": float(psi_R), "frequency": float(psi_F), "monetary": float(psi_M)}
         }
     }
-    st.download_button("⬇️ Baixar relatório de monitoramento (JSON)", data=json.dumps(report, indent=2).encode("utf-8"),
+    st.download_button("⬇️ Relatório de monitoramento (JSON)", data=json.dumps(report, indent=2).encode("utf-8"),
                        file_name="monitoring_report.json", mime="application/json")
 
-st.info("Dica: personalize **Pesos R/F/M**, **tema**, **paleta** e **filtros de período**. Exporte imagens (PNG) direto dos gráficos.")
+st.info("Dica: personalize **Pesos R/F/M**, **cor**, **paleta** e **filtros de período**. Exporte imagens (PNG) direto dos gráficos.")
